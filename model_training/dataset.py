@@ -5,6 +5,9 @@ import h5py
 import numpy as np
 from torch.nn.utils.rnn import pad_sequence
 import math 
+import s3fs
+
+fs = s3fs.S3FileSystem(anon=False)
 
 class BrainToTextDataset(Dataset):
     '''
@@ -116,34 +119,44 @@ class BrainToTextDataset(Dataset):
 
         # Iterate through each day in the index
         for d in index.keys():
-
-            # Open the hdf5 file for that day
-            with h5py.File(self.trial_indicies[d]['session_path'], 'r') as f:
-
-                # For each trial in the selected trials in that day
-                for t in index[d]:
-                    
-                    try: 
-                        g = f[f'trial_{t:04d}']
-
-                        # Remove features is neccessary 
-                        input_features = torch.from_numpy(g['input_features'][:]) # neural data
-                        if self.feature_subset:
-                            input_features = input_features[:,self.feature_subset]
-
-                        batch['input_features'].append(input_features)
-
-                        batch['seq_class_ids'].append(torch.from_numpy(g['seq_class_ids'][:]))  # phoneme labels
-                        batch['transcriptions'].append(torch.from_numpy(g['transcription'][:])) # character level transcriptions
-                        batch['n_time_steps'].append(g.attrs['n_time_steps']) # number of time steps in the trial - required since we are padding
-                        batch['phone_seq_lens'].append(g.attrs['seq_len']) # number of phonemes in the label - required since we are padding
-                        batch['day_indicies'].append(int(d)) # day index of each trial - required for the day specific layers 
-                        batch['block_nums'].append(g.attrs['block_num'])
-                        batch['trial_nums'].append(g.attrs['trial_num'])
-                    
-                    except Exception as e:
-                        print(f'Error loading trial {t} from session {self.trial_indicies[d]["session_path"]}: {e}')
-                        continue
+            session_path = self.trial_indicies[d]['session_path']
+            
+            if not fs.exists(session_path):
+                print(f"[WARN] File not found: {session_path}")
+                continue
+        
+            try:
+                # Open the file directly from S3
+                with fs.open(session_path, 'rb') as s3_file:
+                    with h5py.File(s3_file, 'r') as h5f:
+                        
+                        # For each trial in the selected trials for that day
+                        for t in index[d]:
+                            try:
+                                g = h5f[f'trial_{t:04d}']
+        
+                                # Load neural data (input features)
+                                input_features = torch.from_numpy(g['input_features'][:])
+                                if self.feature_subset:
+                                    input_features = input_features[:, self.feature_subset]
+                                batch['input_features'].append(input_features)
+        
+                                # Load labels and attributes
+                                batch['seq_class_ids'].append(torch.from_numpy(g['seq_class_ids'][:]))
+                                batch['transcriptions'].append(torch.from_numpy(g['transcription'][:]))
+                                batch['n_time_steps'].append(g.attrs['n_time_steps'])
+                                batch['phone_seq_lens'].append(g.attrs['seq_len'])
+                                batch['day_indicies'].append(int(d))
+                                batch['block_nums'].append(g.attrs['block_num'])
+                                batch['trial_nums'].append(g.attrs['trial_num'])
+        
+                            except Exception as e:
+                                print(f"[ERROR] Failed trial {t} in {session_path}: {e}")
+                                continue
+            
+            except Exception as e:
+                print(f"[ERROR] Failed to open {session_path}: {e}")
+                continue
 
         # Pad data to form a cohesive batch
         batch['input_features'] = pad_sequence(batch['input_features'], batch_first = True, padding_value = 0)
@@ -273,25 +286,27 @@ def train_test_split_indicies(file_paths, test_percentage = 0.1, seed = -1, bad_
 
         good_trial_indices = []
 
-        if os.path.exists(path):
-            with h5py.File(path, 'r') as f:
-                num_trials = len(list(f.keys()))
-                for t in range(num_trials):
-                    key = f'trial_{t:04d}'
-                    
-                    block_num = f[key].attrs['block_num']
-                    trial_num = f[key].attrs['trial_num']
-
-                    if (
-                        bad_trials_dict is not None
-                        and session in bad_trials_dict
-                        and str(block_num) in bad_trials_dict[session]
-                        and trial_num in bad_trials_dict[session][str(block_num)]
-                    ):
-                        # print(f'Bad trial: {session}_{block_num}_{trial_num}')
-                        continue
-
-                    good_trial_indices.append(t)
+        if fs.exists(path):  # ✅ works for S3 paths
+            with fs.open(path, 'rb') as f:  # ✅ open from S3
+                with h5py.File(f, 'r') as h5f:
+                    num_trials = len(list(h5f.keys()))
+                    for t in range(num_trials):
+                        key = f'trial_{t:04d}'
+        
+                        block_num = h5f[key].attrs['block_num']
+                        trial_num = h5f[key].attrs['trial_num']
+        
+                        if (
+                            bad_trials_dict is not None
+                            and session in bad_trials_dict
+                            and str(block_num) in bad_trials_dict[session]
+                            and trial_num in bad_trials_dict[session][str(block_num)]
+                        ):
+                            continue
+        
+                        good_trial_indices.append(t)
+        else:
+            print(f"[WARN] S3 file not found: {path}")
 
         trials_per_day[i] = {'num_trials': len(good_trial_indices), 'trial_indices': good_trial_indices, 'session_path': path}
 

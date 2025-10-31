@@ -17,8 +17,8 @@ from evaluate_model_helpers import *
 s3 = boto3.client("s3")
 bucket = "4k-woody-btt"
 fs = s3fs.S3FileSystem()
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-data_path = os.path.join(BASE_DIR, "../data/t15_copyTaskData_description.csv")
+#BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+#data_path = os.path.join(BASE_DIR, "../data/t15_copyTaskData_description.csv")
 
 # --------------------------------------------------------------------------------
 # # argument parser for command line arguments
@@ -31,9 +31,9 @@ parser.add_argument('--data_dir', type=str, default='s3://4k-woody-btt/4k/data/h
 parser.add_argument('--eval_type', type=str, default='test', choices=['val', 'test'],
                     help='Evaluation type: "val" for validation set, "test" for test set. '
                          'If "test", ground truth is not available.')
-parser.add_argument('--csv_path', type=str, default=data_path,
+parser.add_argument('--csv_path', type=str, default="s3://4k-woody-btt/4k/data/t15_copyTaskData_description.csv",
                     help='Path to the CSV file with metadata about the dataset (relative to the current working directory).')
-parser.add_argument('--gpu_number', type=int, default=1,
+parser.add_argument('--gpu_number', type=int, default=0,
                     help='GPU number to use for inference. -1 for CPU.')
 args = parser.parse_args()
 
@@ -59,7 +59,8 @@ gpu_number = args.gpu_number
 if torch.cuda.is_available() and gpu_number >= 0:
     if gpu_number >= torch.cuda.device_count():
         raise ValueError(f'GPU number {gpu_number} is out of range. Available GPUs: {torch.cuda.device_count()}')
-    device = f'cuda:{gpu_number}'
+    #device = f'cuda:{gpu_number}'
+    device = f'cuda:0'
     device = torch.device(device)
     print(f'Using {device} for model inference.')
 else:
